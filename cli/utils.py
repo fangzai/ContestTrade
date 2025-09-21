@@ -175,9 +175,9 @@ def get_market_selection() -> str:
     
     # 根据选择返回对应的市场代码
     if market_choice == market_options[0]:
-        return "CN-Stock"
-    elif market_choice == market_options[1]:
         return "US-Stock"
+    elif market_choice == market_options[1]:
+        return "CN-Stock"
     else:
         return None
 
