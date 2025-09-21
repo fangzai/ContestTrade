@@ -155,8 +155,8 @@ def extract_signal_info(signal: Dict) -> Dict:
 def get_market_selection() -> str:
     """获取用户市场选择 - 使用箭头键选择"""
     market_options = [
-        "CN-Stock (A股市场)",
-        "US-Stock (美股市场)"
+        "US-Stock (美股市场)",
+        "CN-Stock (A股市场)"
     ]
     
     market_choice = questionary.select(
