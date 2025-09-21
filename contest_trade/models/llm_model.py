@@ -195,32 +195,31 @@ class GeminiProvider(BaseProvider):
         super().__init__(config)
         
         try:
-            import google.generativeai as genai
+            from google import genai
+            from google.genai import types
             self.genai = genai
+            self.types = types
         except ImportError:
-            raise ImportError("google-generativeai package is required for Gemini provider. Install with: pip install google-generativeai")
+            raise ImportError("google-genai package is required for Gemini provider. Install with: pip install google-genai")
         
         # Set API key
         if self.api_key is None:
             self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         
-        if self.api_key:
-            genai.configure(api_key=self.api_key)
+        if not self.api_key:
+            raise ValueError("API key is required for Gemini provider.")
         
-        # Configure model
-        generation_config = {
-            "temperature": 0.7,
-            "top_p": 0.95,
-            "top_k": 64,
-            "max_output_tokens": 8192,
-        }
+        self.client = genai.Client(api_key=self.api_key)
         
-        self.model = genai.GenerativeModel(
-            model_name=self.model_name,
-            generation_config=generation_config
+        # Configure default generation config
+        self.default_generation_config = self.types.GenerateContentConfig(
+            temperature=0.7,
+            top_p=0.95,
+            top_k=64,
+            max_output_tokens=8192,
         )
     
-    def preprocess_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def preprocess_messages(self, messages: List[Dict[str, str]]) -> List["google.genai.types.Content"]:
         """Convert OpenAI format messages to Gemini format."""
         gemini_messages = []
         
@@ -230,36 +229,64 @@ class GeminiProvider(BaseProvider):
             
             # Map OpenAI roles to Gemini roles
             if role == "system":
-                # Gemini doesn't have system role, prepend to first user message
-                if gemini_messages and gemini_messages[-1].get("role") == "user":
-                    gemini_messages[-1]["parts"] = [f"{content}\n\n{gemini_messages[-1]['parts'][0]}"]
+                # Gemini supports system_instruction, but to match old behavior, prepend to first user message
+                if gemini_messages and gemini_messages[-1].role == "user":
+                    gemini_messages[-1].parts[0].text = f"{content}\n\n{gemini_messages[-1].parts[0].text}"
                 else:
-                    gemini_messages.append({"role": "user", "parts": [content]})
+                    gemini_messages.append(self.types.Content(role="user", parts=[self.types.Part(text=content)]))
             elif role == "user":
-                gemini_messages.append({"role": "user", "parts": [content]})
+                gemini_messages.append(self.types.Content(role="user", parts=[self.types.Part(text=content)]))
             elif role == "assistant":
-                gemini_messages.append({"role": "model", "parts": [content]})
+                gemini_messages.append(self.types.Content(role="model", parts=[self.types.Part(text=content)]))
         
         return gemini_messages
+    # def preprocess_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    #     """Convert OpenAI format messages to Gemini format."""
+    #     gemini_messages = []
+        
+    #     for msg in messages:
+    #         role = msg["role"]
+    #         content = msg["content"]
+            
+    #         # Map OpenAI roles to Gemini roles
+    #         if role == "system":
+    #             # Gemini doesn't have system role, prepend to first user message
+    #             if gemini_messages and gemini_messages[-1].get("role") == "user":
+    #                 gemini_messages[-1]["parts"] = [f"{content}\n\n{gemini_messages[-1]['parts'][0]}"]
+    #             else:
+    #                 gemini_messages.append({"role": "user", "parts": [content]})
+    #         elif role == "user":
+    #             gemini_messages.append({"role": "user", "parts": [content]})
+    #         elif role == "assistant":
+    #             gemini_messages.append({"role": "model", "parts": [content]})
+        
+    #     return gemini_messages
     
     async def create_stream(self, messages: List[Dict[str, str]], temperature: float, 
                            max_tokens: Optional[int], **kwargs) -> Any:
         processed_messages = self.preprocess_messages(messages)
         
         # Update generation config
-        generation_config = self.model._generation_config.copy()
-        generation_config["temperature"] = temperature
-        if max_tokens:
-            generation_config["max_output_tokens"] = max_tokens
+        generation_config = self.types.GenerateContentConfig(
+            temperature=temperature,
+            top_p=self.default_generation_config.top_p,
+            top_k=self.default_generation_config.top_k,
+            max_output_tokens=max_tokens or self.default_generation_config.max_output_tokens,
+        )
         
-        # Create chat session
-        chat = self.model.start_chat(history=processed_messages[:-1] if len(processed_messages) > 1 else [])
+        # Create async chat session
+        aio_chats = self.client.aio.chats
+        chat = aio_chats.create(
+            model=self.model_name,
+            history=processed_messages[:-1] if len(processed_messages) > 1 else [],
+            config=generation_config
+        )
         
         # Get the last message content
-        last_message = processed_messages[-1]["parts"][0] if processed_messages else ""
+        last_message = processed_messages[-1].parts[0].text if processed_messages else ""
         
         # Generate streaming response
-        response = await chat.send_message_async(last_message, stream=True)
+        response = await chat.send_message_stream(last_message)
         return response
     
     def process_chunk(self, chunk) -> StreamingChunk[str]:
@@ -271,7 +298,7 @@ class GeminiProvider(BaseProvider):
             content = chunk.text
         
         # Gemini doesn't provide explicit finish signals in chunks
-        # We'll rely on the async iterator to determine when finished
+        # We'll rely on the iterator to determine when finished
         
         return StreamingChunk(
             content=content,
@@ -279,8 +306,6 @@ class GeminiProvider(BaseProvider):
             raw_chunk=chunk,
             is_reasoning=False
         )
-
-
 class OllamaProvider(BaseProvider):
     """Ollama provider implementation."""
     
